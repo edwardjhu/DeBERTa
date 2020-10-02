@@ -17,6 +17,7 @@ import math
 
 from ..deberta import *
 from ..utils import *
+from ..bert import LUPLinear
 
 __all__= ['SequenceClassificationModel']
 class SequenceClassificationModel(NNModule):
@@ -33,7 +34,7 @@ class SequenceClassificationModel(NNModule):
     self.pooler = ContextPooler(pool_config)
     output_dim = self.pooler.output_dim()
 
-    self.classifier = torch.nn.Linear(output_dim, num_labels)
+    self.classifier = LUPLinear(output_dim, num_labels, width_mult=config.hidden_size/config.base_size)
     drop_out = self.config.hidden_dropout_prob if drop_out is None else drop_out
     self.dropout = StableDropout(drop_out)
     self.apply(self.init_weights)

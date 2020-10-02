@@ -73,10 +73,12 @@ class DisentangledSelfAttention(torch.nn.Module):
             raise ValueError(
                 "The hidden size (%d) is not a multiple of the number of attention "
                 "heads (%d)" % (config.hidden_size, config.num_attention_heads))
+        self.width_mult = config.hidden_size / config.base_size
+        self.base_size = config.base_size
         self.num_attention_heads = config.num_attention_heads
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
-        self.in_proj = torch.nn.Linear(config.hidden_size, self.all_head_size*3, bias=False)
+        self.in_proj = LUPLinear(config.hidden_size, self.all_head_size*3, bias=False)
         self.q_bias = torch.nn.Parameter(torch.zeros((self.all_head_size), dtype=torch.float))
         self.v_bias = torch.nn.Parameter(torch.zeros((self.all_head_size), dtype=torch.float))
         self.pos_att_type = [x.strip() for x in getattr(config, 'pos_att_type', 'none').lower().split('|')] # c2p|p2c
@@ -85,8 +87,8 @@ class DisentangledSelfAttention(torch.nn.Module):
         self.talking_head = getattr(config, 'talking_head', False)
 
         if self.talking_head:
-            self.head_logits_proj = torch.nn.Linear(config.num_attention_heads, config.num_attention_heads, bias=False)
-            self.head_weights_proj = torch.nn.Linear(config.num_attention_heads, config.num_attention_heads, bias=False)
+            self.head_logits_proj = LUPLinear(config.num_attention_heads, config.num_attention_heads, bias=False)
+            self.head_weights_proj = LUPLinear(config.num_attention_heads, config.num_attention_heads, bias=False)
 
         if self.relative_attention:
             self.max_relative_positions = getattr(config, 'max_relative_positions', -1)
@@ -95,9 +97,9 @@ class DisentangledSelfAttention(torch.nn.Module):
             self.pos_dropout = StableDropout(config.hidden_dropout_prob)
 
             if 'c2p' in self.pos_att_type or 'p2p' in self.pos_att_type:
-                self.pos_proj = torch.nn.Linear(config.hidden_size, self.all_head_size, bias=False)
+                self.pos_proj = LUPLinear(config.hidden_size, self.all_head_size, bias=False)
             if 'p2c' in self.pos_att_type or 'p2p' in self.pos_att_type:
-                self.pos_q_proj = torch.nn.Linear(config.hidden_size, self.all_head_size)
+                self.pos_q_proj = LUPLinear(config.hidden_size, self.all_head_size, width_mult=self.width_mult)
 
         self.dropout = StableDropout(config.attention_probs_dropout_prob)
 
@@ -148,8 +150,8 @@ class DisentangledSelfAttention(torch.nn.Module):
             k,v = [linear(qkvw[i], qkvb[i], hidden_states) for i in range(1,3)]
             query_layer, key_layer, value_layer = [self.transpose_for_scores(x) for x in [q,k,v]]
 
-        query_layer += self.transpose_for_scores(self.q_bias.unsqueeze(0).unsqueeze(0))
-        value_layer += self.transpose_for_scores(self.v_bias.unsqueeze(0).unsqueeze(0))
+        query_layer += self.transpose_for_scores(self.q_bias.unsqueeze(0).unsqueeze(0)) * self.width_mult
+        value_layer += self.transpose_for_scores(self.v_bias.unsqueeze(0).unsqueeze(0)) * self.width_mult
 
         rel_att = None
         # Take the dot product between "query" and "key" to get the raw attention scores.
@@ -160,7 +162,8 @@ class DisentangledSelfAttention(torch.nn.Module):
             scale_factor += 1
         if 'p2p' in self.pos_att_type:
             scale_factor += 1
-        scale = math.sqrt(query_layer.size(-1)*scale_factor)
+        #scale = math.sqrt(query_layer.size(-1)*scale_factor)
+        scale = query_layer.size(-1)*math.sqrt(scale_factor) / (self.base_size / self.num_attention_heads)**0.5  # parameterize attn logits correctly while recovering the default
         query_layer = query_layer/scale
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         if self.relative_attention:
@@ -221,7 +224,8 @@ class DisentangledSelfAttention(torch.nn.Module):
 
         # position->content
         if 'p2c' in self.pos_att_type or 'p2p' in self.pos_att_type:
-            pos_query_layer /= math.sqrt(pos_query_layer.size(-1)*scale_factor)
+            #pos_query_layer /= math.sqrt(pos_query_layer.size(-1)*scale_factor)
+            pos_query_layer /= pos_query_layer.size(-1)*math.sqrt(scale_factor) / (self.base_size / self.num_attention_heads)**0.5
             if query_layer.size(-2) != key_layer.size(-2):
                 r_pos = build_relative_position(key_layer.size(-2), key_layer.size(-2), query_layer.device)
             else:

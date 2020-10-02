@@ -76,6 +76,7 @@ class ModelConfig(AbsModelConfig):
         """
         
         self.hidden_size = 768
+        self.base_size = 768  # anchor width for LUP
         self.num_hidden_layers = 12
         self.num_attention_heads = 12
         self.hidden_act = "gelu"

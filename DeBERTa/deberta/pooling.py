@@ -10,7 +10,7 @@ from torch import nn
 import copy
 import json
 from .bert import ACT2FN
-from .ops import StableDropout
+from .ops import StableDropout,LUPLinear
 from .config import AbsModelConfig
 
 __all__ = ['PoolConfig', 'ContextPooler']
@@ -69,7 +69,8 @@ class PoolConfig(AbsModelConfig):
 class ContextPooler(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.width_mult = config.hidden_size / config.base_size
+        self.dense = LUPLinear(config.hidden_size, config.hidden_size, width_mult=self.width_mult)
         self.dropout = StableDropout(config.dropout)
         self.config = config
 

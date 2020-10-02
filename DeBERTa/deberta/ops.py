@@ -67,6 +67,26 @@ class XSoftmax(torch.autograd.Function):
     inputGrad = _softmax_backward_data(grad_output, output, self.dim, output)
     return inputGrad, None, None
 
+class LUPLinear(torch.nn.Linear):
+    __constants__ = ['in_features', 'out_features']
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, width_mult: float = 1.0) -> None:
+        super(LUPLinear, self).__init__(in_features, out_features, bias)
+        self.width_mult = width_mult
+        self._reset_parameters()
+    
+    def _reset_parameters(self):
+      self.weight.data.normal_(0, 1/self.width_mult**0.5)
+      if self.bias is not None:
+        self.bias.data.zero_()
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if self.bias is None:
+            return torch.nn.functional.linear(input, self.weight)
+        else:
+            return torch.nn.functional.linear(input, self.weight, self.bias*self.width_mult)
+
+
 class DropoutContext(object):
   def __init__(self):
     self.dropout = 0

@@ -16,6 +16,7 @@ import math
 from torch import nn
 from torch.nn import CrossEntropyLoss
 from ..deberta import DeBERTa,NNModule,ACT2FN,StableDropout
+from ..ops import LUPLinear
 
 __all__ = ['NERModel']
 
@@ -24,8 +25,8 @@ class NERModel(NNModule):
     super().__init__(config)
     self.bert = DeBERTa(config)
     self.num_labels = num_labels
-    self.proj = nn.Linear(config.hidden_size, config.hidden_size)
-    self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+    self.proj = LUPLinear(config.hidden_size, config.hidden_size, width_mult=config.hidden_size/config.base_size)
+    self.classifier = LUPLinear(config.hidden_size, self.num_labels, width_mult=config.hidden_size/config.base_size)
     drop_out = config.hidden_dropout_prob if drop_out is None else drop_out
     self.dropout = StableDropout(drop_out)
     self.apply(self.init_weights)

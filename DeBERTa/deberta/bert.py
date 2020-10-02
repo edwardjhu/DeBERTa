@@ -38,15 +38,18 @@ def linear_act(x):
 
 ACT2FN = {"gelu": gelu, "relu": torch.nn.functional.relu, "swish": swish, "tanh": torch.nn.functional.tanh, "linear": linear_act, 'sigmoid': torch.sigmoid}
 
+
 class BertLayerNorm(nn.Module):
   """LayerNorm module in the TF style (epsilon inside the square root).
   """
 
-  def __init__(self, size, eps=1e-12):
+  def __init__(self, size, width_mult, eps=1e-12):
     super().__init__()
     self.weight = nn.Parameter(torch.ones(size))
+    self.weight.data /= width_mult  # initialize LN weights like O(1/n)
     self.bias = nn.Parameter(torch.zeros(size))
     self.variance_epsilon = eps
+    self.width_mult = width_mult  # LUP
 
   def forward(self, x):
     input_type = x.dtype
@@ -55,14 +58,15 @@ class BertLayerNorm(nn.Module):
     s = (x - u).pow(2).mean(-1, keepdim=True)
     x = (x - u) / torch.sqrt(s + self.variance_epsilon)
     x = x.to(input_type)
-    y = self.weight * x + self.bias
+    y = self.weight * x * self.width_mult + self.bias * self.width_mult  # InfLayerNorm
     return y
 
 class BertSelfOutput(nn.Module):
   def __init__(self, config):
     super().__init__()
-    self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-    self.LayerNorm = BertLayerNorm(config.hidden_size, config.layer_norm_eps)
+    self.width_mult = config.hidden_size / config.base_size
+    self.dense = LUPLinear(config.hidden_size, config.hidden_size, width_mult=self.width_mult)
+    self.LayerNorm = BertLayerNorm(config.hidden_size, self.width_mult, config.layer_norm_eps)
     self.dropout = StableDropout(config.hidden_dropout_prob)
     self.config = config
 
@@ -96,7 +100,8 @@ class BertAttention(nn.Module):
 class BertIntermediate(nn.Module):
   def __init__(self, config):
     super().__init__()
-    self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
+    self.width_mult = config.hidden_size / config.base_size
+    self.dense = LUPLinear(config.hidden_size, config.intermediate_size, width_mult=self.width_mult)
     self.intermediate_act_fn = ACT2FN[config.hidden_act] \
       if isinstance(config.hidden_act, str) else config.hidden_act
 
@@ -108,8 +113,9 @@ class BertIntermediate(nn.Module):
 class BertOutput(nn.Module):
   def __init__(self, config):
     super(BertOutput, self).__init__()
-    self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
-    self.LayerNorm = BertLayerNorm(config.hidden_size, config.layer_norm_eps)
+    self.width_mult = config.hidden_size / config.base_size
+    self.dense = LUPLinear(config.intermediate_size, config.hidden_size, width_mult=self.width_mult)
+    self.LayerNorm = BertLayerNorm(config.hidden_size, self.width_mult, config.layer_norm_eps)
     self.dropout = StableDropout(config.hidden_dropout_prob)
     self.config = config
 
@@ -214,6 +220,7 @@ class BertEmbeddings(nn.Module):
   def __init__(self, config):
     super(BertEmbeddings, self).__init__()
     padding_idx = getattr(config, 'padding_idx', 0)
+    self.width_mult = config.hidden_size / config.base_size
     self.embedding_size = getattr(config, 'embedding_size', config.hidden_size)
     self.word_embeddings = nn.Embedding(config.vocab_size, self.embedding_size, padding_idx = padding_idx)
 
@@ -227,11 +234,20 @@ class BertEmbeddings(nn.Module):
       self.token_type_embeddings = nn.Embedding(config.type_vocab_size, self.embedding_size)
     
     if self.embedding_size != config.hidden_size:
-      self.embed_proj = nn.Linear(self.embedding_size, config.hidden_size, bias=False)
-    self.LayerNorm = BertLayerNorm(config.hidden_size, config.layer_norm_eps)
+      self.embed_proj = LUPLinear(self.embedding_size, config.hidden_size, bias=False, width_mult=self.width_mult)
+    self.LayerNorm = BertLayerNorm(config.hidden_size, self.width_mult, config.layer_norm_eps)
     self.dropout = StableDropout(config.hidden_dropout_prob)
     self.output_to_half = False
     self.config = config
+
+    self._reset_parameters()
+  
+  def _reset_parameters(self):
+    self.word_embeddings.data.normal_(0, 1/self.width_mult)
+    if self.position_embeddings is not None:
+      self.position_embeddings.data.normal_(0, 1/self.width_mult)
+    if self.config.type_vocab_size>0:
+      self.token_type_embeddings.data.normal_(0, 1/self.width_mult)
 
   def forward(self, input_ids, token_type_ids=None, position_ids=None, mask = None):
     seq_length = input_ids.size(1)
@@ -241,9 +257,9 @@ class BertEmbeddings(nn.Module):
     if token_type_ids is None:
       token_type_ids = torch.zeros_like(input_ids)
 
-    words_embeddings = self.word_embeddings(input_ids)
+    words_embeddings = self.word_embeddings(input_ids) * self.width_mult
     if self.position_embeddings is not None:
-      position_embeddings = self.position_embeddings(position_ids.long())
+      position_embeddings = self.position_embeddings(position_ids.long()) * self.width_mult
     else:
       position_embeddings = torch.zeros_like(words_embeddings)
 

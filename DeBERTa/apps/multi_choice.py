@@ -16,6 +16,7 @@ from torch.nn import CrossEntropyLoss
 import math
 
 from ..deberta import *
+from ..bert import LUPLinear
 from ..utils import *
 import pdb
 
@@ -25,7 +26,7 @@ class MultiChoiceModel(NNModule):
     super().__init__(config)
     self.bert = DeBERTa(config)
     self.num_labels = num_labels
-    self.classifier = nn.Linear(config.hidden_size, 1)
+    self.classifier = LUPLinear(config.hidden_size, 1, width_mult=config.hidden_size/config.base_size)
     drop_out = config.hidden_dropout_prob if drop_out is None else drop_out
     self.dropout = StableDropout(drop_out)
     self.apply(self.init_weights)
